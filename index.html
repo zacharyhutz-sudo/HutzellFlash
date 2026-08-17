@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>HutzellFlash</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    height: 100%;
+    background: #0e1420;
+    font-family: "Courier New", ui-monospace, monospace;
+    overflow: hidden;
+    touch-action: none;
+  }
+  body { display: flex; align-items: center; justify-content: center; }
+  #wrap {
+    position: relative;
+    width: min(100vw, 177.78vh);   /* 16:9 */
+    height: min(100vh, 56.25vw);
+  }
+  canvas { width: 100%; height: 100%; display: block; }
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="game"></canvas></div>
+<script>
+"use strict";
+
+// ---------- Canvas ----------
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const VW = 960, VH = 540;                 // internal resolution
+canvas.width = VW; canvas.height = VH;
+
+// ---------- State ----------
+const GROUND = VH - 56;
+let state = "title";                      // title | play | over
+let plane, obstacles, coins, particles, clouds;
+let score, coinCount, highScore, speed, t, shakeT, coinFlash;
+let spawnTimer = 1.2, coinTimer = 0.8;
+let best = parseInt(localStorage.getItem("hutzellflash_best") || "0", 10);
+
+// ---------- Tiny audio (no assets needed) ----------
+let actx = null;
+function beep(freq, dur, type, vol) {
+  try {
+    if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+    if (actx.state === "suspended") actx.resume();
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.type = type || "sine"; o.frequency.value = freq;
+    g.gain.setValueAtTime(vol || 0.12, actx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.0001, actx.currentTime + dur);
+    o.connect(g); g.connect(actx.destination);
+    o.start(); o.stop(actx.currentTime + dur);
+  } catch (e) { /* audio is optional */ }
+}
+
+// ---------- Helpers ----------
+const rnd = (a, b) => a + Math.random() * (b - a);
+
+function reset() {
+  plane = { x: 150, y: VH / 2, vy: 0, tilt: 0, w: 74, h: 30 };
+  obstacles = []; coins = []; particles = [];
+  clouds = [];
+  for (let i = 0; i < 5; i++) clouds.push(makeCloud(rnd(-100, VW)));
+  score = 0; coinCount = 0; speed = 220; t = 0; shakeT = 0; coinFlash = 0;
+  spawnTimer = 1.2; coinTimer = 0.8;
+}
+
+function makeCloud(x) {
+  const s = rnd(0.5, 1.4);
+  return { x: x, y: rnd(40, GROUND - 120), s: s, v: rnd(8, 26) * s };
+}
+
+// ---------- Input ----------
+const keys = {};
+let pointerY = null, pointerDown = false;
+window.addEventListener("keydown", e => {
+  if (["ArrowUp","ArrowDown"," ","w","s","W","S"].includes(e.key)) e.preventDefault();
+  keys[e.key.toLowerCase()] = true;
+  if (state !== "play" && (e.key === " " || e.key === "Enter")) start();
+});
+window.addEventListener("keyup", e => { keys[e.key.toLowerCase()] = false; });
+
+function canvasY(clientY) {
+  const r = canvas.getBoundingClientRect();
+  return (clientY - r.top) / r.height * VH;
+}
+canvas.addEventListener("pointerdown", e => {
+  pointerDown = true;
+  pointerY = canvasY(e.clientY);
+  if (state !== "play") start();
+});
+canvas.addEventListener("pointermove", e => {
+  if (pointerDown) pointerY = canvasY(e.clientY);
+});
+window.addEventListener("pointerup", () => { pointerDown = false; });
+
+function start() {
+  if (state === "play") return;
+  reset();
+  state = "play";
+  beep(520, 0.12, "triangle");
+}
+
+// ---------- Spawning ----------
+function spawnObstacle() {
+  const kind = Math.floor(rnd(0, 3));
+  if (kind === 0) {                        // cloud puff
+    const h = rnd(50, 110);
+    const low = Math.random() < 0.5;
+    obstacles.push({ kind: "cloud", x: VW + 60, y: low ? GROUND - h / 2 : rnd(60, GROUND - 160), w: rnd(80, 130), h: h });
+  } else if (kind === 1) {                 // balloon
+    obstacles.push({ kind: "balloon", x: VW + 40, y: rnd(90, GROUND - 90), w: 34, h: 46, bob: rnd(0, 6.28), str: rnd(20, 54) });
+  } else {                                 // bird
+    const vy0 = rnd(-40, 40);
+    obstacles.push({ kind: "bird", x: VW + 40, y: rnd(100, GROUND - 110), w: 46, h: 26, vy: vy0, flap: 0 });
+  }
+}
+
+function spawnCoin() {
+  const cluster = Math.random() < 0.4 ? 3 : 1;
+  const y = rnd(90, GROUND - 80);
+  for (let i = 0; i < cluster; i++) {
+    coins.push({ x: VW + 40 + i * 44, y: y + (cluster > 1 ? i * 4 : 0), r: 13, spin: rnd(0, 6.28) });
+  }
+}
+
+function burst(x, y, color, n) {
+  for (let i = 0; i < n; i++) {
+    const a = rnd(0, Math.PI * 2), sp = rnd(60, 260);
+    particles.push({ x: x, y: y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: rnd(0.3, 0.7), t: 0, color: color, r: rnd(2, 5) });
+  }
+}
+
+// ---------- Update ----------
+function update(dt) {
+  t += dt;
+
+  // clouds always drift
+  for (const c of clouds) {
+    c.x -= c.v * dt * (state === "play" ? 1.6 : 1);
+    if (c.x < -160) Object.assign(c, makeCloud(VW + rnd(40, 200)));
+  }
+
+  // particles
+  for (const p of particles) { p.t += dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 200 * dt; }
+  particles = particles.filter(p => p.t < p.life);
+
+  if (state !== "play") return;
+
+  speed = Math.min(430, speed + 9 * dt);
+  score += speed * dt * 0.05;
+
+  // plane control: keys nudge, pointer is target
+  const thrust = (keys["arrowup"] || keys["w"] ? -1 : 0) + (keys["arrowdown"] || keys["s"] ? 1 : 0);
+  let targetY = plane.y;
+  if (pointerDown && pointerY != null) targetY = pointerY;
+  else targetY = plane.y + thrust * 320 * dt;
+  targetY = Math.max(50, Math.min(GROUND - 30, targetY));
+  plane.y += (targetY - plane.y) * Math.min(1, dt * 9);
+  plane.tilt += ((targetY - plane.y) / 40 * 0.6 - plane.tilt) * Math.min(1, dt * 10);
+
+  // spawn timers
+  spawnTimer -= dt;
+  if (spawnTimer <= 0) { spawnObstacle(); spawnTimer = rnd(0.85, 1.5) * Math.max(0.55, 1 - t / 90); }
+  coinTimer -= dt;
+  if (coinTimer <= 0) { spawnCoin(); coinTimer = rnd(1.4, 2.6); }
+
+  // move obstacles
+  for (const o of obstacles) {
+    o.x -= speed * dt;
+    if (o.kind === "balloon") { o.bob += dt * 3; o.y += Math.sin(o.bob) * 26 * dt; }
+    if (o.kind === "bird") {
+      o.flap += dt * 14;
+      o.y += o.vy * dt + Math.sin(t * 2 + o.x * 0.01) * 18 * dt;
+      o.y = Math.max(70, Math.min(GROUND - 60, o.y));
+    }
+  }
+  obstacles = obstacles.filter(o => o.x > -160);
+  for (const c of coins) { c.x -= speed * dt; c.spin += dt * 6; }
+  coins = coins.filter(c => c.x > -40);
+
+  // collisions (plane is a forgiving box)
+  const px = plane.x, py = plane.y, pw = plane.w * 0.36, ph = plane.h * 0.42;
+  for (const o of obstacles) {
+    const ow = o.kind === "bird" ? o.w * 0.55 : o.w * 0.42;
+    const oh = o.kind === "cloud" ? o.h * 0.45 : o.h * 0.5;
+    if (Math.abs(o.x - px) < (ow + pw) && Math.abs(o.y - py) < (oh + ph)) {
+      gameOver(o);
+      return;
+    }
+  }
+  for (let i = coins.length - 1; i >= 0; i--) {
+    const c = coins[i];
+    const dx = c.x - px, dy = c.y - py;
+    if (dx * dx + dy * dy < 42 * 42) {
+      coins.splice(i, 1);
+      coinCount++;
+      score += 25;
+      coinFlash = 1;
+      burst(c.x, c.y, "#ffd94d", 10);
+      beep(880, 0.09, "square", 0.07);
+      beep(1320, 0.14, "sine", 0.05);
+    }
+  }
+
+  // ground scrape
+  if (plane.y > GROUND - 16) { gameOver(null); }
+
+  shakeT = Math.max(0, shakeT - dt * 3);
+  coinFlash = Math.max(0, coinFlash - dt * 4);
+}
+
+function gameOver(hit) {
+  state = "over";
+  shakeT = 1;
+  burst(plane.x, plane.y, "#e8edf4", 26);
+  burst(plane.x, plane.y, "#ff7b4d", 18);
+  if (hit) burst(hit.x, hit.y, hit.kind === "cloud" ? "#ffffff" : "#ffb04d", 14);
+  beep(220, 0.25, "sawtooth", 0.1);
+  beep(110, 0.4, "triangle", 0.12);
+  const total = Math.floor(score);
+  if (total > best) { best = total; localStorage.setItem("hutzellflash_best", String(best)); }
+}
+
+// ---------- Drawing ----------
+function drawSky() {
+  const g = ctx.createLinearGradient(0, 0, 0, VH);
+  g.addColorStop(0, "#6fb9ff");
+  g.addColorStop(0.6, "#a8d8ff");
+  g.addColorStop(1, "#e8f6ff");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, VW, VH);
+
+  // sun
+  ctx.fillStyle = "rgba(255, 236, 150, 0.9)";
+  ctx.beginPath(); ctx.arc(VW - 120, 90, 44, 0, 7); ctx.fill();
+  ctx.fillStyle = "rgba(255, 236, 150, 0.35)";
+  ctx.beginPath(); ctx.arc(VW - 120, 90, 62 + Math.sin(t * 2) * 4, 0, 7); ctx.fill();
+
+  // far hills
+  ctx.fillStyle = "rgba(122, 178, 122, 0.55)";
+  ctx.beginPath();
+  ctx.moveTo(0, GROUND);
+  for (let x = 0; x <= VW; x += 48) ctx.lineTo(x, GROUND - 40 - 34 * Math.abs(Math.sin(x * 0.008 + 2)));
+  ctx.lineTo(VW, GROUND); ctx.fill();
+}
+
+function drawCloud(x, y, s) {
+  ctx.fillStyle = "rgba(255,255,255,0.85)";
+  ctx.beginPath();
+  ctx.arc(x, y, 22 * s, 0, 7);
+  ctx.arc(x + 24 * s, y - 8 * s, 18 * s, 0, 7);
+  ctx.arc(x + 48 * s, y, 20 * s, 0, 7);
+  ctx.arc(x + 24 * s, y + 8 * s, 16 * s, 0, 7);
+  ctx.fill();
+}
+
+function drawObstacle(o) {
+  if (o.kind === "cloud") {
+    ctx.fillStyle = "#5a6b7d";
+    ctx.strokeStyle = "#42525f"; ctx.lineWidth = 3;
+    ctx.beginPath();
+    const r = o.h / 2;
+    ctx.arc(o.x - o.w * 0.28, o.y, r * 0.8, 0, 7);
+    ctx.arc(o.x, o.y - r * 0.4, r, 0, 7);
+    ctx.arc(o.x + o.w * 0.28, o.y, r * 0.8, 0, 7);
+    ctx.fill(); ctx.stroke();
+    // little grumpy face
+    ctx.fillStyle = "#fff";
+    ctx.beginPath(); ctx.arc(o.x - 12, o.y - 4, 4, 0, 7); ctx.arc(o.x + 12, o.y - 4, 4, 0, 7); ctx.fill();
+    ctx.strokeStyle = "#42525f"; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(o.x - 17, o.y - 12); ctx.lineTo(o.x - 7, o.y - 9);
+    ctx.moveTo(o.x + 17, o.y - 12); ctx.lineTo(o.x + 7, o.y - 9);
+    ctx.stroke();
+  } else if (o.kind === "balloon") {
+    ctx.strokeStyle = "#5a4632"; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(o.x, o.y + o.h / 2);
+    ctx.quadraticCurveTo(o.x + 8, o.y + o.h / 2 + o.str * 0.5, o.x - 4, o.y + o.h / 2 + o.str);
+    ctx.stroke();
+    const g = ctx.createLinearGradient(o.x - 17, 0, o.x + 17, 0);
+    g.addColorStop(0, "#d94f4f"); g.addColorStop(0.5, "#ff7b7b"); g.addColorStop(1, "#d94f4f");
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.ellipse(o.x, o.y, 17, 22, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = "#a83232";
+    ctx.beginPath(); ctx.arc(o.x, o.y + 22, 4, 0, 7); ctx.fill();
+  } else { // bird
+    const w = Math.sin(o.flap) * 12;
+    ctx.fillStyle = "#3c4a5a";
+    ctx.beginPath(); ctx.ellipse(o.x, o.y, 16, 9, 0, 0, 7); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(o.x + 12, o.y - 2); ctx.lineTo(o.x + 24, o.y - 4); ctx.lineTo(o.x + 12, o.y + 3);
+    ctx.fill();
+    ctx.strokeStyle = "#2c3644"; ctx.lineWidth = 5; ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(o.x - 4, o.y);
+    ctx.lineTo(o.x - 22, o.y - 10 - w);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(o.x + 4, o.y);
+    ctx.lineTo(o.x + 14, o.y - 8 - w);
+    ctx.stroke();
+    ctx.fillStyle = "#ffb04d";
+    ctx.beginPath(); ctx.arc(o.x + 13, o.y - 2, 2.5, 0, 7); ctx.fill();
+  }
+}
+
+function drawCoin(c) {
+  const sx = Math.abs(Math.cos(c.spin));
+  ctx.save();
+  ctx.translate(c.x, c.y);
+  ctx.scale(Math.max(0.18, sx), 1);
+  ctx.fillStyle = "#e8a820";
+  ctx.beginPath(); ctx.arc(0, 0, c.r, 0, 7); ctx.fill();
+  ctx.fillStyle = "#ffd94d";
+  ctx.beginPath(); ctx.arc(0, 0, c.r - 4, 0, 7); ctx.fill();
+  ctx.fillStyle = "#e8a820";
+  ctx.font = "bold 13px monospace";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText("$", 0, 1);
+  ctx.restore();
+}
+
+function drawPlane() {
+  ctx.save();
+  ctx.translate(plane.x, plane.y);
+  ctx.rotate(plane.tilt * 0.5);
+
+  // contrail
+  ctx.fillStyle = "rgba(255,255,255,0.35)";
+  ctx.beginPath();
+  ctx.moveTo(-30, -2);
+  ctx.lineTo(-30 - rnd(30, 60), -8 - rnd(0, 8));
+  ctx.lineTo(-30 - rnd(30, 60), 6 + rnd(0, 8));
+  ctx.fill();
+
+  // fuselage
+  ctx.fillStyle = "#e8edf4";
+  ctx.strokeStyle = "#42525f"; ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(38, 0);
+  ctx.quadraticCurveTo(30, -11, 8, -11);
+  ctx.lineTo(-26, -8);
+  ctx.quadraticCurveTo(-34, 0, -26, 8);
+  ctx.lineTo(8, 11);
+  ctx.quadraticCurveTo(30, 11, 38, 0);
+  ctx.closePath();
+  ctx.fill(); ctx.stroke();
+
+  // tail
+  ctx.fillStyle = "#ff7b4d";
+  ctx.beginPath();
+  ctx.moveTo(-24, -6);
+  ctx.lineTo(-34, -22);
+  ctx.lineTo(-18, -8);
+  ctx.closePath();
+  ctx.fill();
+
+  // wing
+  ctx.fillStyle = "#d94f4f";
+  ctx.beginPath();
+  ctx.moveTo(10, -4);
+  ctx.lineTo(-14, -20);
+  ctx.lineTo(-22, -20);
+  ctx.lineTo(-8, -4);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = "#42525f"; ctx.lineWidth = 2; ctx.stroke();
+
+  // window
+  ctx.fillStyle = "#7fd4ff";
+  ctx.strokeStyle = "#42525f"; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.ellipse(18, -3, 7, 5, 0, 0, 7); ctx.fill(); ctx.stroke();
+
+  // spinner
+  ctx.fillStyle = "#42525f";
+  ctx.beginPath(); ctx.arc(40, 0, 4, 0, 7); ctx.fill();
+
+  ctx.restore();
+}
+
+function drawGround() {
+  ctx.fillStyle = "#7cb47c";
+  ctx.fillRect(0, GROUND, VW, VH - GROUND);
+  ctx.fillStyle = "#5f9660";
+  ctx.fillRect(0, GROUND, VW, 8);
+  // runway stripes scrolling
+  const off = (t * speed * 0.8) % 80;
+  ctx.fillStyle = "rgba(255,255,255,0.35)";
+  for (let x = -off; x < VW; x += 80) {
+    ctx.fillRect(x, GROUND + 34, 44, 5);
+  }
+  // bushes
+  ctx.fillStyle = "#4d8a52";
+  const off2 = (t * speed * 0.5) % 160;
+  for (let x = -off2; x < VW + 60; x += 160) {
+    ctx.beginPath();
+    ctx.arc(x, GROUND, 14, Math.PI, 0);
+    ctx.arc(x + 18, GROUND, 10, Math.PI, 0);
+    ctx.fill();
+  }
+}
+
+function drawHUD() {
+  ctx.textBaseline = "top";
+  ctx.fillStyle = "rgba(16, 28, 44, 0.55)";
+  ctx.fillRect(0, 0, VW, 46);
+  ctx.fillStyle = "#fff";
+  ctx.font = "bold 20px monospace";
+  ctx.textAlign = "left";
+  ctx.fillText("SCORE " + String(Math.floor(score)).padStart(5, "0"), 16, 12);
+  ctx.textAlign = "center";
+  ctx.fillStyle = coinFlash > 0.4 ? "#fff3b0" : "#ffd94d";
+  ctx.fillText("COINS " + coinCount, VW / 2, 12);
+  ctx.textAlign = "right";
+  ctx.fillStyle = "#9fd6ff";
+  ctx.fillText("BEST " + String(best).padStart(5, "0"), VW - 16, 12);
+}
+
+function centerText(txt, y, size, color) {
+  ctx.font = "bold " + size + "px monospace";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillStyle = "rgba(10, 20, 34, 0.55)";
+  const w = ctx.measureText(txt).width + 60;
+  ctx.fillRect(VW / 2 - w / 2, y - size * 0.8, w, size * 1.6);
+  ctx.fillStyle = color;
+  ctx.fillText(txt, VW / 2, y);
+}
+
+function draw() {
+  ctx.save();
+  if (shakeT > 0) ctx.translate(rnd(-8, 8) * shakeT, rnd(-8, 8) * shakeT);
+
+  drawSky();
+  for (const c of clouds) drawCloud(c.x, c.y, c.s);
+  drawGround();
+  for (const o of obstacles) drawObstacle(o);
+  for (const c of coins) drawCoin(c);
+  if (state !== "over") drawPlane();
+  for (const p of particles) {
+    ctx.globalAlpha = 1 - p.t / p.life;
+    ctx.fillStyle = p.color;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, 7); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  if (state === "play") drawHUD();
+  if (state === "title") {
+    centerText("HUTZELLFLASH", 170, 52, "#fff");
+    centerText("fly the plane - dodge the weather", 240, 20, "#dcecff");
+    centerText("up/down or hold to steer - grab the coins", 274, 18, "#ffd94d");
+    if (Math.sin(t * 4) > -0.3) centerText("PRESS SPACE / TAP TO FLY", 350, 22, "#9fd6ff");
+  }
+  if (state === "over") {
+    centerText("CRASHED!", 190, 52, "#ff8b6b");
+    centerText("SCORE " + Math.floor(score) + "   COINS " + coinCount, 258, 24, "#fff");
+    centerText("BEST " + best, 296, 20, "#ffd94d");
+    if (Math.sin(t * 4) > -0.3) centerText("PRESS SPACE / TAP TO RETRY", 366, 20, "#9fd6ff");
+  }
+  ctx.restore();
+}
+
+// ---------- Main loop ----------
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  if (state === "title") t += dt;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+reset();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
