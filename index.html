@@ -64,7 +64,7 @@ function reset() {
   obstacles = []; coins = []; particles = [];
   clouds = [];
   for (let i = 0; i < 5; i++) clouds.push(makeCloud(rnd(-100, VW)));
-  score = 0; coinCount = 0; speed = 220; t = 0; shakeT = 0; coinFlash = 0;
+  score = 0; coinCount = 0; speed = 150; t = 0; shakeT = 0; coinFlash = 0;
   spawnTimer = 1.2; coinTimer = 0.8;
 }
 
@@ -150,7 +150,8 @@ function update(dt) {
 
   if (state !== "play") return;
 
-  speed = Math.min(430, speed + 9 * dt);
+  // gradual difficulty ramp: starts slow, approaches ~470 over time
+  speed = Math.min(480, 150 + 320 * (1 - Math.exp(-t / 40)));
   score += speed * dt * 0.05;
 
   // plane control: keys nudge, pointer is target
