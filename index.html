@@ -64,10 +64,33 @@ canvas.width = VW; canvas.height = VH;
 // ---------- State ----------
 const GROUND = VH - 56;
 let state = "title";                      // title | play | over
-let plane, obstacles, coins, particles, clouds;
-let score, coinCount, highScore, speed, t, shakeT, coinFlash;
-let spawnTimer = 1.2, coinTimer = 0.8;
+let plane, obstacles, coins, particles, clouds, hazards, ring;
+let score, coinCount, speed, t, shakeT, coinFlash;
+let spawnTimer = 1.2, coinTimer = 0.8, ringTimer = 0;
 let best = parseInt(localStorage.getItem("hutzellflash_best") || "0", 10);
+
+// ---------- Progression ----------
+const LEVEL_THRESHOLDS = [0, 150, 350, 600, 950, 1400, 2000, 2700, 3600, 4700];
+const LEVEL_NAMES = ["SKY TRAINEE", "LOW CLOUD", "MID AIR", "STORM FRONTS", "HURRICANE BAY", "UPPER STRATOS", "JET STREAM", "POLAR FRONT", "STORM EYE", "CROSSWINDS"];
+const HAZARD_UNLOCK = 4;                  // level at which wind gusts start
+function levelForScore(s) { let n = 1; for (let i = 0; i < LEVEL_THRESHOLDS.length; i++) if (s >= LEVEL_THRESHOLDS[i]) n = i + 1; return n; }
+function speedForLevel(lv) { return Math.min(600, 150 + (lv - 1) * 45 + 40 * (1 - Math.exp(-t / 30))); }
+function hazardCountForLevel(lv) { return lv < 4 ? 0 : Math.min(3, lv - 3); }
+
+function reset() {
+  plane = { x: 150, y: VH / 2, vy: 0, tilt: 0, w: 74, h: 30 };
+  obstacles = []; coins = []; hazards = []; particles = [];
+  clouds = [];
+  ring = null;                            // active "clear the ring" objective
+  for (let i = 0; i < 5; i++) clouds.push(makeCloud(rnd(-100, VW)));
+  score = 0; coinCount = 0; speed = 150; t = 0; shakeT = 0; coinFlash = 0;
+  spawnTimer = 1.2; coinTimer = 0.8; ringTimer = 0;
+}
+
+function makeCloud(x) {
+  const s = rnd(0.5, 1.4);
+  return { x: x, y: rnd(40, GROUND - 120), s: s, v: rnd(8, 26) * s };
+}
 
 // ---------- Tiny audio (no assets needed) ----------
 let actx = null;
@@ -86,20 +109,6 @@ function beep(freq, dur, type, vol) {
 
 // ---------- Helpers ----------
 const rnd = (a, b) => a + Math.random() * (b - a);
-
-function reset() {
-  plane = { x: 150, y: VH / 2, vy: 0, tilt: 0, w: 74, h: 30 };
-  obstacles = []; coins = []; particles = [];
-  clouds = [];
-  for (let i = 0; i < 5; i++) clouds.push(makeCloud(rnd(-100, VW)));
-  score = 0; coinCount = 0; speed = 150; t = 0; shakeT = 0; coinFlash = 0;
-  spawnTimer = 1.2; coinTimer = 0.8;
-}
-
-function makeCloud(x) {
-  const s = rnd(0.5, 1.4);
-  return { x: x, y: rnd(40, GROUND - 120), s: s, v: rnd(8, 26) * s };
-}
 
 // ---------- Input ----------
 const keys = {};
@@ -155,6 +164,24 @@ function spawnCoin() {
   }
 }
 
+// objective ring: a golden ring the plane must thread through
+function spawnRing() {
+  ring = { x: VW + 120, y: rnd(130, GROUND - 140), r: 64, spin: 0 };
+}
+
+// wind gust hazard: pushes the plane off course
+function spawnHazard() {
+  const fromLeft = Math.random() < 0.5;
+  hazards.push({
+    x: fromLeft ? -60 : VW + 60,
+    y: rnd(80, GROUND - 90),
+    w: 120, h: 90,
+    dir: fromLeft ? 1 : -1,
+    push: Math.random() < 0.5 ? -1 : 1,   // -1 = blows up, +1 = blows down
+    spin: rnd(0, 6.28)
+  });
+}
+
 function burst(x, y, color, n) {
   for (let i = 0; i < n; i++) {
     const a = rnd(0, Math.PI * 2), sp = rnd(60, 260);
@@ -178,8 +205,9 @@ function update(dt) {
 
   if (state !== "play") return;
 
-  // gradual difficulty ramp: starts slow, approaches ~470 over time
-  speed = Math.min(480, 150 + 320 * (1 - Math.exp(-t / 40)));
+  // level from score; speed ramps with level
+  const lv = levelForScore(score);
+  speed = speedForLevel(lv);
   score += speed * dt * 0.05;
 
   // plane control: keys nudge, pointer is target
@@ -196,6 +224,19 @@ function update(dt) {
   if (spawnTimer <= 0) { spawnObstacle(); spawnTimer = rnd(0.85, 1.5) * Math.max(0.55, 1 - t / 90); }
   coinTimer -= dt;
   if (coinTimer <= 0) { spawnCoin(); coinTimer = rnd(1.4, 2.6); }
+  // periodic objective ring (every ~9-14s of play)
+  ringTimer -= dt;
+  if (ringTimer <= 0) { spawnRing(); ringTimer = rnd(9, 14); }
+
+  // move hazards (wind gusts)
+  for (const h of hazards) { h.x += h.dir * speed * 0.6 * dt; h.spin += dt * 6; }
+  hazards = hazards.filter(h => h.x > -200 && h.x < VW + 200);
+  // keep the right number of hazards for the current level
+  const wantHaz = hazardCountForLevel(lv);
+  if (hazards.length < wantHaz && Math.random() < dt * 0.6) spawnHazard();
+
+  // move ring
+  if (ring) { ring.x -= speed * dt; ring.spin += dt * 3; if (ring.x < -160) ring = null; }
 
   // move obstacles
   for (const o of obstacles) {
@@ -210,6 +251,28 @@ function update(dt) {
   obstacles = obstacles.filter(o => o.x > -160);
   for (const c of coins) { c.x -= speed * dt; c.spin += dt * 6; }
   coins = coins.filter(c => c.x > -40);
+
+  // wind gust push (grows stronger with level)
+  const gust = 70 + lv * 14;
+  for (const h of hazards) {
+    const hw = h.w * 0.5, hh = h.h * 0.55;
+    if (Math.abs(h.x - plane.x) < hw + plane.w * 0.3 && Math.abs(h.y - plane.y) < hh + plane.h * 0.4) {
+      plane.y += h.push * gust * dt;             // blows up or down off course
+      plane.tilt += h.dir * 0.35;
+    }
+  }
+  plane.y = Math.max(50, Math.min(GROUND - 16, plane.y));
+
+  // ring objective check
+  if (ring) {
+    const dx = ring.x - plane.x, dy = ring.y - plane.y;
+    if (dx * dx + dy * dy < ring.r * ring.r) {
+      score += 150; coinFlash = 1;
+      burst(ring.x, ring.y, "#ffd94d", 16);
+      beep(1040, 0.14, "sine", 0.08);
+      ring = null;
+    }
+  }
 
   // collisions (plane is a forgiving box)
   const px = plane.x, py = plane.y, pw = plane.w * 0.36, ph = plane.h * 0.42;
@@ -285,6 +348,52 @@ function drawCloud(x, y, s) {
   ctx.arc(x + 48 * s, y, 20 * s, 0, 7);
   ctx.arc(x + 24 * s, y + 8 * s, 16 * s, 0, 7);
   ctx.fill();
+}
+
+function drawHazard(h) {
+  ctx.save();
+  ctx.globalAlpha = 0.75;
+  ctx.fillStyle = "#9fd6ff";
+  for (let i = 0; i < 3; i++) {
+    const yy = h.y + (i - 1) * 18;
+    const dir = h.dir > 0 ? 1 : -1;
+    ctx.beginPath();
+    ctx.moveTo(h.x - dir * 40, yy);
+    ctx.lineTo(h.x + dir * (20 + i * 6), yy);
+    ctx.lineTo(h.x + dir * (20 + i * 6 + 14), yy - 4);
+    ctx.lineTo(h.x + dir * (20 + i * 6 + 14), yy + 4);
+    ctx.closePath();
+    ctx.fill();
+  }
+  // chevron showing which way the gust blows
+  ctx.globalAlpha = 0.9;
+  ctx.fillStyle = "#ffffff";
+  const s = h.push > 0 ? 1 : -1;   // +1 blows down, -1 blows up
+  ctx.beginPath();
+  ctx.moveTo(h.x - 14, h.y - 30 * s);
+  ctx.lineTo(h.x + 14, h.y - 30 * s);
+  ctx.lineTo(h.x, h.y - 30 * s - 12 * s);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawRing(r) {
+  ctx.save();
+  ctx.translate(r.x, r.y);
+  ctx.rotate(Math.sin(r.spin) * 0.4);
+  ctx.globalAlpha = 0.9;
+  ctx.strokeStyle = "#ffd94d";
+  ctx.lineWidth = 10;
+  ctx.beginPath(); ctx.arc(0, 0, r.r, 0, 7); ctx.stroke();
+  ctx.strokeStyle = "rgba(255, 217, 77, 0.4)";
+  ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(0, 0, r.r + 12, 0, 7); ctx.stroke();
+  ctx.fillStyle = "#fff3b0";
+  ctx.font = "bold 16px monospace";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText("+150", 0, 0);
+  ctx.restore();
 }
 
 function drawObstacle(o) {
@@ -442,12 +551,38 @@ function drawHUD() {
   ctx.font = "bold 20px monospace";
   ctx.textAlign = "left";
   ctx.fillText("SCORE " + String(Math.floor(score)).padStart(5, "0"), 16, 12);
+
+  // level badge (center) + coins
+  const lv = levelForScore(score);
+  const name = LEVEL_NAMES[lv - 1];
   ctx.textAlign = "center";
   ctx.fillStyle = coinFlash > 0.4 ? "#fff3b0" : "#ffd94d";
-  ctx.fillText("COINS " + coinCount, VW / 2, 12);
+  ctx.fillText("LV " + lv + "  " + name, VW / 2 - 110, 12);
+  ctx.fillStyle = "#9fd6ff";
+  ctx.fillText("COINS " + coinCount, VW / 2 + 120, 12);
   ctx.textAlign = "right";
   ctx.fillStyle = "#9fd6ff";
   ctx.fillText("BEST " + String(best).padStart(5, "0"), VW - 16, 12);
+
+  // progress bar toward next level
+  const next = LEVEL_THRESHOLDS[lv]; // undefined at max level
+  if (next !== undefined) {
+    const cur = LEVEL_THRESHOLDS[lv - 1];
+    const frac = Math.max(0, Math.min(1, (score - cur) / (next - cur)));
+    ctx.fillStyle = "rgba(255,255,255,0.25)";
+    ctx.fillRect(16, 42, VW - 32, 3);
+    ctx.fillStyle = "#9fd6ff";
+    ctx.fillRect(16, 42, (VW - 32) * frac, 3);
+  } else {
+    ctx.fillStyle = "#9fd6ff";
+    ctx.fillRect(16, 42, VW - 32, 3);
+    ctx.font = "bold 11px monospace";
+    ctx.textAlign = "left";
+    ctx.fillText("MAX LEVEL", 16, 30);
+  }
+
+  // objective banner
+  if (ring) centerText("FLY THROUGH THE RING  +150", 64, 16, "#ffd94d");
 }
 
 function centerText(txt, y, size, color) {
@@ -466,9 +601,11 @@ function draw() {
 
   drawSky();
   for (const c of clouds) drawCloud(c.x, c.y, c.s);
+  for (const h of hazards) drawHazard(h);
   drawGround();
   for (const o of obstacles) drawObstacle(o);
   for (const c of coins) drawCoin(c);
+  if (ring) drawRing(ring);
   if (state !== "over") drawPlane();
   for (const p of particles) {
     ctx.globalAlpha = 1 - p.t / p.life;
@@ -482,13 +619,20 @@ function draw() {
     centerText("HUTZELLFLASH", 170, 52, "#fff");
     centerText("fly the plane - dodge the weather", 240, 20, "#dcecff");
     centerText("up/down or hold to steer - grab the coins", 274, 18, "#ffd94d");
-    if (Math.sin(t * 4) > -0.3) centerText("PRESS SPACE / TAP TO FLY", 350, 22, "#9fd6ff");
+    centerText("climb through levels - clear the golden rings", 308, 16, "#9fd6ff");
+    if (Math.sin(t * 4) > -0.3) centerText("PRESS SPACE / TAP TO FLY", 380, 22, "#9fd6ff");
   }
   if (state === "over") {
-    centerText("CRASHED!", 190, 52, "#ff8b6b");
-    centerText("SCORE " + Math.floor(score) + "   COINS " + coinCount, 258, 24, "#fff");
-    centerText("BEST " + best, 296, 20, "#ffd94d");
-    if (Math.sin(t * 4) > -0.3) centerText("PRESS SPACE / TAP TO RETRY", 366, 20, "#9fd6ff");
+    const total = Math.floor(score);
+    const lv = levelForScore(total);
+    const name = LEVEL_NAMES[lv - 1];
+    const speedPct = Math.round((Math.min(speed, 600) / 600) * 100);
+    centerText("CRASHED!", 170, 52, "#ff8b6b");
+    centerText("SCORE " + total + "     COINS " + coinCount, 232, 24, "#fff");
+    centerText("REACHED LEVEL " + lv + "  -  " + name, 268, 18, "#9fd6ff");
+    centerText("PEAK SPEED " + speedPct + "%   BEST " + best, 300, 18, "#ffd94d");
+    if (total >= best && total > 0) centerText("NEW BEST RUN!", 330, 16, "#7dff9f");
+    if (Math.sin(t * 4) > -0.3) centerText("PRESS SPACE / TAP TO RETRY", 372, 20, "#9fd6ff");
   }
   ctx.restore();
 }
