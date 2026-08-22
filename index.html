@@ -73,9 +73,9 @@ ctx.imageSmoothingEnabled = false;
 
 // ---------- State ----------
 const GROUND = VH - 56;
-let state = "title";                      // title | play | over
-let plane, obstacles, coins, particles, clouds, hazards, ring;
-let score, coinCount, speed, t, shakeT, coinFlash;
+let state = "title";                      // title | play | crash | over
+let plane, obstacles, coins, particles, clouds, hazards, ring, popups;
+let score, coinCount, speed, t, shakeT, coinFlash, crashTimer, crashFreeze, newBest;
 let spawnTimer = 1.2, coinTimer = 0.8, ringTimer = 0;
 let best = parseInt(localStorage.getItem("hutzellflash_best") || "0", 10);
 
@@ -89,11 +89,11 @@ function hazardCountForLevel(lv) { return lv < 4 ? 0 : Math.min(3, lv - 3); }
 
 function reset() {
   plane = { x: 150, y: VH / 2, vy: 0, tilt: 0, w: 74, h: 30 };
-  obstacles = []; coins = []; hazards = []; particles = [];
+  obstacles = []; coins = []; hazards = []; particles = []; popups = [];
   clouds = [];
   ring = null;                            // active "clear the ring" objective
   for (let i = 0; i < 5; i++) clouds.push(makeCloud(rnd(-100, VW)));
-  score = 0; coinCount = 0; speed = 150; t = 0; shakeT = 0; coinFlash = 0;
+  score = 0; coinCount = 0; speed = 150; t = 0; shakeT = 0; coinFlash = 0; crashTimer = 0; crashFreeze = 0; newBest = false;
   spawnTimer = 1.2; coinTimer = 0.8; ringTimer = 0;
 }
 
@@ -121,13 +121,15 @@ function beep(freq, dur, type, vol) {
 const rnd = (a, b) => a + Math.random() * (b - a);
 
 // ---------- Input ----------
-const KEY_SPEED = 440;                    // px/s keyboard control — snappy arcade feel
+const KEY_SPEED = 440;                    // same maximum climb/dive speed as before
+const CONTROL_RESPONSE = 10.5;            // quick acceleration without cursor-like snapping
+const CONTROL_RELEASE = 8.0;              // settles rapidly when the player releases input
 const keys = {};
 let pointerY = null, pointerDown = false;
 window.addEventListener("keydown", e => {
   if (["ArrowUp","ArrowDown"," ","w","s","W","S"].includes(e.key)) e.preventDefault();
   keys[e.key.toLowerCase()] = true;
-  if (state !== "play" && (e.key === " " || e.key === "Enter")) start();
+  if ((state === "title" || state === "over") && (e.key === " " || e.key === "Enter")) start();
 });
 window.addEventListener("keyup", e => { keys[e.key.toLowerCase()] = false; });
 
@@ -138,7 +140,7 @@ function canvasY(clientY) {
 canvas.addEventListener("pointerdown", e => {
   pointerDown = true;
   pointerY = canvasY(e.clientY);
-  if (state !== "play") start();
+  if (state === "title" || state === "over") start();
 });
 canvas.addEventListener("pointermove", e => {
   if (pointerDown) pointerY = canvasY(e.clientY);
@@ -193,16 +195,27 @@ function spawnHazard() {
   });
 }
 
-function burst(x, y, color, n) {
+function burst(x, y, color, n, energy = 1) {
   for (let i = 0; i < n; i++) {
-    const a = rnd(0, Math.PI * 2), sp = rnd(60, 260);
+    const a = rnd(0, Math.PI * 2), sp = rnd(60, 260) * energy;
     particles.push({ x: x, y: y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: rnd(0.3, 0.7), t: 0, color: color, r: rnd(2, 5) });
   }
+}
+
+function popup(text, x, y, color, life = 0.62) {
+  popups.push({ text, x, y, color, life, t: 0 });
 }
 
 // ---------- Update ----------
 function update(dt) {
   t += dt;
+
+  // A crash gets a tiny hit-stop before debris moves. It makes impact feel crisp
+  // without changing the collision rules or run difficulty.
+  if (state === "crash" && crashFreeze > 0) {
+    crashFreeze = Math.max(0, crashFreeze - dt);
+    return;
+  }
 
   // clouds always drift
   for (const c of clouds) {
@@ -210,10 +223,20 @@ function update(dt) {
     if (c.x < -160) Object.assign(c, makeCloud(VW + rnd(40, 200)));
   }
 
-  // particles
+  // particles and score popups continue through the short crash animation
   for (const p of particles) { p.t += dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 200 * dt; }
   particles = particles.filter(p => p.t < p.life);
+  for (const p of popups) { p.t += dt; p.y -= 28 * dt; }
+  popups = popups.filter(p => p.t < p.life);
 
+  shakeT = Math.max(0, shakeT - dt * (state === "crash" ? 4.5 : 3));
+  coinFlash = Math.max(0, coinFlash - dt * 4);
+
+  if (state === "crash") {
+    crashTimer -= dt;
+    if (crashTimer <= 0) state = "over";
+    return;
+  }
   if (state !== "play") return;
 
   // level from score; speed ramps with level
@@ -221,16 +244,26 @@ function update(dt) {
   speed = speedForLevel(lv);
   score += speed * dt * 0.05;
 
-  // plane control: keys fly at full speed (snappy), pointer steers toward a target
+  // Flight polish: input still means only UP / DOWN, but the plane now eases into
+  // its target vertical speed instead of teleporting directly at KEY_SPEED.
   const thrust = (keys["arrowup"] || keys["w"] ? -1 : 0) + (keys["arrowdown"] || keys["s"] ? 1 : 0);
+  let targetVy = thrust * KEY_SPEED;
+  let response = thrust ? CONTROL_RESPONSE : CONTROL_RELEASE;
   if (pointerDown && pointerY != null) {
-    plane.y += (pointerY - plane.y) * Math.min(1, dt * 10);
-    plane.tilt += ((pointerY - plane.y) / 40 * 0.6 - plane.tilt) * Math.min(1, dt * 10);
-  } else {
-    plane.y += thrust * KEY_SPEED * dt;
-    plane.y = Math.max(50, Math.min(GROUND - 16, plane.y));
-    plane.tilt += (thrust * 0.55 - plane.tilt) * Math.min(1, dt * 8);
+    const delta = pointerY - plane.y;
+    targetVy = Math.max(-KEY_SPEED, Math.min(KEY_SPEED, delta * 7.5));
+    response = CONTROL_RESPONSE + 2;
   }
+  plane.vy += (targetVy - plane.vy) * Math.min(1, dt * response);
+  plane.y += plane.vy * dt;
+
+  const minY = 50, maxY = GROUND - 16;
+  if (plane.y <= minY) { plane.y = minY; if (plane.vy < 0) plane.vy *= 0.22; }
+  if (plane.y >= maxY) { plane.y = maxY; if (plane.vy > 0) plane.vy *= 0.22; }
+
+  // Banking follows actual motion, so both keyboard and touch share the same feel.
+  const targetTilt = Math.max(-0.62, Math.min(0.62, plane.vy / KEY_SPEED * 0.62));
+  plane.tilt += (targetTilt - plane.tilt) * Math.min(1, dt * 11);
 
   // spawn timers
   spawnTimer -= dt;
@@ -280,9 +313,12 @@ function update(dt) {
   if (ring) {
     const dx = ring.x - plane.x, dy = ring.y - plane.y;
     if (dx * dx + dy * dy < ring.r * ring.r) {
-      score += 150; coinFlash = 1;
-      burst(ring.x, ring.y, "#ffd94d", 16);
-      beep(1040, 0.14, "sine", 0.08);
+      score += 150; coinFlash = 1; shakeT = Math.max(shakeT, 0.13);
+      burst(ring.x, ring.y, "#ffd94d", 20, 1.05);
+      burst(ring.x, ring.y, "#fff3a4", 8, 0.72);
+      popup("+150", ring.x, ring.y - 44, "#fff0a7", 0.78);
+      beep(1040, 0.10, "square", 0.075);
+      beep(1560, 0.18, "sine", 0.055);
       ring = null;
     }
   }
@@ -304,30 +340,35 @@ function update(dt) {
       coins.splice(i, 1);
       coinCount++;
       score += 25;
-      coinFlash = 1;
-      burst(c.x, c.y, "#ffd94d", 10);
-      beep(880, 0.09, "square", 0.07);
-      beep(1320, 0.14, "sine", 0.05);
+      coinFlash = 1; shakeT = Math.max(shakeT, 0.035);
+      burst(c.x, c.y, "#ffd94d", 10, 0.78);
+      burst(c.x, c.y, "#fff3a4", 4, 0.5);
+      popup("+25", c.x, c.y - 24, "#fff0a7", 0.52);
+      beep(920, 0.07, "square", 0.06);
+      beep(1380, 0.11, "sine", 0.045);
     }
   }
 
   // ground scrape
   if (plane.y > GROUND - 16) { gameOver(null); }
 
-  shakeT = Math.max(0, shakeT - dt * 3);
-  coinFlash = Math.max(0, coinFlash - dt * 4);
 }
 
 function gameOver(hit) {
-  state = "over";
+  if (state !== "play") return;
+  state = "crash";
+  crashFreeze = 0.085;
+  crashTimer = 0.42;
   shakeT = 1;
-  burst(plane.x, plane.y, "#e8edf4", 26);
-  burst(plane.x, plane.y, "#ff7b4d", 18);
-  if (hit) burst(hit.x, hit.y, hit.kind === "cloud" ? "#ffffff" : "#ffb04d", 14);
-  beep(220, 0.25, "sawtooth", 0.1);
-  beep(110, 0.4, "triangle", 0.12);
+  burst(plane.x, plane.y, "#e8edf4", 30, 1.05);
+  burst(plane.x, plane.y, "#ff7b4d", 20, 1.0);
+  burst(plane.x, plane.y, "#ffd36a", 10, 0.7);
+  if (hit) burst(hit.x, hit.y, hit.kind === "cloud" ? "#ffffff" : "#ffb04d", 14, 0.8);
+  beep(220, 0.18, "sawtooth", 0.09);
+  beep(110, 0.34, "triangle", 0.11);
   const total = Math.floor(score);
-  if (total > best) { best = total; localStorage.setItem("hutzellflash_best", String(best)); }
+  newBest = total > best;
+  if (newBest) { best = total; localStorage.setItem("hutzellflash_best", String(best)); }
 }
 
 // ---------- Rendering ----------
@@ -353,7 +394,6 @@ let last = performance.now();
 function loop(now) {
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
-  if (state === "title") t += dt;
   update(dt);
   draw();
   requestAnimationFrame(loop);

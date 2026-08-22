@@ -126,8 +126,9 @@ function pixelDisc(cx,cy,r,color){
     ctx.fillRect(cx-half,cy+y,half*2+1,1);
   }
 }
+function displayLevel(){ return state === "title" ? 1 : levelForScore(score); }
 function skyPalette(){
-  const lv=state==="play"?levelForScore(score):1;
+  const lv=displayLevel();
   if(lv>=9) return [P.night1,P.night2,P.night3,P.night4];
   if(lv>=7) return [P.sunset1,P.sunset2,P.sunset3,P.sunset4];
   if(lv>=4) return [P.storm1,P.storm2,P.storm3,P.storm4];
@@ -138,7 +139,7 @@ function drawSky(){
   const pal=skyPalette();
   const band=Math.ceil(ART_H/4);
   for(let i=0;i<4;i++){ ctx.fillStyle=pal[i]; ctx.fillRect(0,i*band,ART_W,band+1); }
-  const lv=state==="play"?levelForScore(score):1;
+  const lv=displayLevel();
   // sparse pixel texture / stars at the latest stages
   if(lv>=9){
     ctx.fillStyle="#d7ecff";
@@ -152,15 +153,15 @@ function drawSky(){
     ctx.fillRect(268,28,24,2); ctx.fillRect(279,17,2,24);
   }
   // very distant mountain chain, slow parallax
-  const farOff=Math.floor((t*(state==="play"?speed:45)*0.018)%48);
+  const farOff=Math.floor((t*(state==="title"?45:speed)*0.018)%48);
   for(let x=-farOff-48;x<ART_W+48;x+=48) sprite("mountain",x,137,{alpha:.55});
   // field banding, gives the bottom of the world a tiled/pixel-art landscape
   ctx.fillStyle="rgba(46,94,67,.34)"; ctx.fillRect(0,151,ART_W,10);
   ctx.fillStyle="rgba(115,158,91,.24)";
-  const fieldOff=Math.floor((t*(state==="play"?speed:35)*0.03)%28);
+  const fieldOff=Math.floor((t*(state==="title"?35:speed)*0.03)%28);
   for(let x=-fieldOff;x<ART_W;x+=28) ctx.fillRect(x,154,15,2);
   // distant farm / tree silhouettes on a separate parallax layer
-  const midOff=Math.floor((t*(state==="play"?speed:40)*0.06)%96);
+  const midOff=Math.floor((t*(state==="title"?40:speed)*0.06)%96);
   for(let x=-midOff-96,i=0;x<ART_W+96;x+=96,i++){
     if(i%2===0) sprite("farmhouse",x+25,141,{alpha:.74});
     sprite("tree",x+68,136,{alpha:.72,w:12,h:19});
@@ -209,10 +210,13 @@ function drawPlane(){
   const bank=plane.tilt<-.14?"Up":(plane.tilt>.14?"Down":"Neutral");
   const prop=(Math.floor(t*18)%2)===0?"A":"B";
   const x=A(plane.x), y=A(plane.y);
-  // blocky contrail: deliberately not a gradient or vector taper
+  // Blocky contrail: the little vertical offset follows the actual flight direction.
   ctx.fillStyle="rgba(244,249,255,.48)";
   const puff=Math.floor(t*8)%3;
-  ctx.fillRect(x-25-puff,y+1,7,2); ctx.fillRect(x-35+puff,y,5,2); ctx.fillRect(x-42-puff,y+2,3,1);
+  const trailY=clamp(Math.round((plane.vy||0)/220),-2,2);
+  ctx.fillRect(x-25-puff,y+1-trailY,7,2);
+  ctx.fillRect(x-35+puff,y-trailY,5,2);
+  ctx.fillRect(x-42-puff,y+2-trailY,3,1);
   spriteCentered("plane"+bank+prop,x,y);
 }
 
@@ -239,6 +243,15 @@ function drawGround(){
 function panel(x,y,w,h){
   ctx.fillStyle=P.panel; ctx.fillRect(x,y,w,h);
   ctx.fillStyle="rgba(255,255,255,.10)"; ctx.fillRect(x,y,w,1);
+}
+
+function drawPopups(){
+  for(const p of popups){
+    const alpha=clamp(1-p.t/p.life,0,1);
+    ctx.globalAlpha=alpha;
+    pixelText(p.text,A(p.x),A(p.y),1,p.color,"center",true);
+  }
+  ctx.globalAlpha=1;
 }
 
 function drawHUD(){
@@ -279,7 +292,7 @@ function overCard(){
   pixelText("SCORE "+total+"  COINS "+coinCount,160,84,1,P.white,"center",false);
   pixelText("LEVEL "+lv+" - "+name,160,96,1,P.blue,"center",false);
   pixelText("PEAK "+speedPct+"%  BEST "+best,160,108,1,P.gold,"center",false);
-  if(total>=best&&total>0) pixelText("NEW BEST RUN!",160,120,1,"#8df2a2","center",false);
+  if(newBest) pixelText("NEW BEST RUN!",160,120,1,"#8df2a2","center",false);
   if(Math.sin(t*4)>-.3) pixelText("PRESS SPACE / TAP TO RETRY",160,145,1,P.blue,"center",true);
 }
 
@@ -296,7 +309,7 @@ function draw(){
   for(const o of obstacles) drawObstacle(o);
   for(const c of coins) drawCoin(c);
   if(ring) drawRing(ring);
-  if(state!=="over") drawPlane();
+  if(state!=="over" && (state!=="crash" || crashFreeze>0)) drawPlane();
   for(const p of particles){
     const alpha=1-p.t/p.life;
     ctx.globalAlpha=alpha; ctx.fillStyle=p.color;
@@ -304,6 +317,11 @@ function draw(){
     ctx.fillRect(A(p.x),A(p.y),sz,sz);
   }
   ctx.globalAlpha=1;
+  drawPopups();
+  if(state==="crash" && crashFreeze>0){
+    ctx.fillStyle="rgba(255,244,218,.20)";
+    ctx.fillRect(0,0,ART_W,ART_H);
+  }
   if(state==="play") drawHUD();
   if(state==="title") titleCard();
   if(state==="over") overCard();
