@@ -19,7 +19,10 @@
     width: min(100vw, 177.78vh);   /* 16:9 */
     height: min(100vh, 56.25vw);
   }
-  canvas { width: 100%; height: 100%; display: block; }
+  canvas {
+    width: 100%; height: 100%; display: block;
+    image-rendering: pixelated;   /* chunky nearest-neighbor upscale */
+  }
   #rotatePrompt {
     position: fixed; inset: 0;
     display: none;
@@ -57,9 +60,16 @@
 
 // ---------- Canvas ----------
 const canvas = document.getElementById("game");
-const ctx = canvas.getContext("2d");
 const VW = 960, VH = 540;                 // internal resolution
+const PIXEL = 2;                          // pixel-art scale: scene renders at VW/PIXEL, upscaled nearest-neighbor
 canvas.width = VW; canvas.height = VH;
+const main = canvas.getContext("2d");
+main.imageSmoothingEnabled = false;
+// low-res offscreen buffer: everything is drawn here, then blitted up chunky
+const pcan = document.createElement("canvas");
+pcan.width = VW / PIXEL; pcan.height = VH / PIXEL;
+const ctx = pcan.getContext("2d");
+ctx.imageSmoothingEnabled = false;
 
 // ---------- State ----------
 const GROUND = VH - 56;
@@ -111,6 +121,7 @@ function beep(freq, dur, type, vol) {
 const rnd = (a, b) => a + Math.random() * (b - a);
 
 // ---------- Input ----------
+const KEY_SPEED = 440;                    // px/s keyboard control — snappy arcade feel
 const keys = {};
 let pointerY = null, pointerDown = false;
 window.addEventListener("keydown", e => {
@@ -210,14 +221,16 @@ function update(dt) {
   speed = speedForLevel(lv);
   score += speed * dt * 0.05;
 
-  // plane control: keys nudge, pointer is target
+  // plane control: keys fly at full speed (snappy), pointer steers toward a target
   const thrust = (keys["arrowup"] || keys["w"] ? -1 : 0) + (keys["arrowdown"] || keys["s"] ? 1 : 0);
-  let targetY = plane.y;
-  if (pointerDown && pointerY != null) targetY = pointerY;
-  else targetY = plane.y + thrust * 320 * dt;
-  targetY = Math.max(50, Math.min(GROUND - 30, targetY));
-  plane.y += (targetY - plane.y) * Math.min(1, dt * 9);
-  plane.tilt += ((targetY - plane.y) / 40 * 0.6 - plane.tilt) * Math.min(1, dt * 10);
+  if (pointerDown && pointerY != null) {
+    plane.y += (pointerY - plane.y) * Math.min(1, dt * 10);
+    plane.tilt += ((pointerY - plane.y) / 40 * 0.6 - plane.tilt) * Math.min(1, dt * 10);
+  } else {
+    plane.y += thrust * KEY_SPEED * dt;
+    plane.y = Math.max(50, Math.min(GROUND - 16, plane.y));
+    plane.tilt += (thrust * 0.55 - plane.tilt) * Math.min(1, dt * 8);
+  }
 
   // spawn timers
   spawnTimer -= dt;
@@ -319,12 +332,13 @@ function gameOver(hit) {
 
 // ---------- Drawing ----------
 function drawSky() {
-  const g = ctx.createLinearGradient(0, 0, 0, VH);
-  g.addColorStop(0, "#6fb9ff");
-  g.addColorStop(0.6, "#a8d8ff");
-  g.addColorStop(1, "#e8f6ff");
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, VW, VH);
+  // banded sky: stepped color bands read as pixel-art sky layers
+  const bands = ["#5f9fe8", "#6fb9ff", "#84c5ff", "#a8d8ff", "#c2e6ff", "#d9f2ff", "#e8f6ff"];
+  const bh = Math.ceil(VH / bands.length);
+  for (let i = 0; i < bands.length; i++) {
+    ctx.fillStyle = bands[i];
+    ctx.fillRect(0, i * bh, VW, bh + 1);
+  }
 
   // sun
   ctx.fillStyle = "rgba(255, 236, 150, 0.9)";
@@ -596,6 +610,7 @@ function centerText(txt, y, size, color) {
 }
 
 function draw() {
+  ctx.setTransform(1 / PIXEL, 0, 0, 1 / PIXEL, 0, 0);   // draw in full-res game coords onto the low-res buffer
   ctx.save();
   if (shakeT > 0) ctx.translate(rnd(-8, 8) * shakeT, rnd(-8, 8) * shakeT);
 
@@ -635,6 +650,8 @@ function draw() {
     if (Math.sin(t * 4) > -0.3) centerText("PRESS SPACE / TAP TO RETRY", 372, 20, "#9fd6ff");
   }
   ctx.restore();
+  // blit the low-res buffer up to the visible canvas, nearest-neighbor for the pixel look
+  main.drawImage(pcan, 0, 0, VW, VH);
 }
 
 // ---------- Mobile orientation prompt ----------
