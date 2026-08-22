@@ -77,6 +77,7 @@ let state = "title";                      // title | play | crash | over
 let plane, obstacles, coins, particles, clouds, hazards, ring, popups;
 let score, coinCount, speed, t, shakeT, coinFlash, crashTimer, crashFreeze, newBest;
 let spawnTimer = 1.2, coinTimer = 0.8, ringTimer = 0;
+let patternQueue, lastPattern, spawnGuideY, lastLevel, levelBannerT;
 let best = parseInt(localStorage.getItem("hutzellflash_best") || "0", 10);
 
 // ---------- Progression ----------
@@ -87,6 +88,56 @@ function levelForScore(s) { let n = 1; for (let i = 0; i < LEVEL_THRESHOLDS.leng
 function speedForLevel(lv) { return Math.min(600, 150 + (lv - 1) * 45 + 40 * (1 - Math.exp(-t / 30))); }
 function hazardCountForLevel(lv) { return lv < 4 ? 0 : Math.min(3, lv - 3); }
 
+// ---------- Fair spawn formations ----------
+// One obstacle still spawns each time the original obstacle timer fires. The only
+// change is that altitude/type now come from short authored sequences instead of
+// unrelated random rolls. This keeps density and pace familiar while producing
+// readable openings the player can learn to fly through.
+const FLIGHT_LANES = [102, 174, 246, 318, 390];
+const SPAWN_PATTERNS = [
+  [{kind:"cloud",lane:0,guide:3},{kind:"balloon",lane:1,guide:4},{kind:"bird",lane:0,guide:3}],
+  [{kind:"balloon",lane:4,guide:1},{kind:"bird",lane:3,guide:0},{kind:"cloud",lane:4,guide:1}],
+  [{kind:"cloud",lane:4,guide:0},{kind:"balloon",lane:3,guide:0},{kind:"bird",lane:2,guide:4},{kind:"cloud",lane:1,guide:4}],
+  [{kind:"bird",lane:0,guide:4},{kind:"cloud",lane:1,guide:4},{kind:"balloon",lane:2,guide:0},{kind:"bird",lane:3,guide:0}],
+  [{kind:"balloon",lane:1,guide:4},{kind:"bird",lane:3,guide:0},{kind:"cloud",lane:1,guide:4},{kind:"bird",lane:3,guide:0}],
+  [{kind:"cloud",lane:2,guide:0},{kind:"bird",lane:2,guide:4},{kind:"balloon",lane:2,guide:0}],
+  [{kind:"bird",lane:0,guide:3},{kind:"balloon",lane:4,guide:1},{kind:"cloud",lane:1,guide:4}],
+  [{kind:"cloud",lane:4,guide:0},{kind:"bird",lane:1,guide:4},{kind:"balloon",lane:3,guide:0}],
+  [{kind:"cloud",lane:0,guide:3},{kind:"bird",lane:1,guide:4},{kind:"cloud",lane:0,guide:3}],
+  [{kind:"balloon",lane:4,guide:0},{kind:"cloud",lane:3,guide:0},{kind:"bird",lane:4,guide:1}],
+  [{kind:"bird",lane:1,guide:4},{kind:"balloon",lane:2,guide:0},{kind:"cloud",lane:3,guide:0},{kind:"bird",lane:2,guide:4}],
+  [{kind:"cloud",lane:0,guide:4},{kind:"bird",lane:3,guide:0},{kind:"balloon",lane:1,guide:4},{kind:"cloud",lane:4,guide:0}]
+];
+
+function laneY(lane, jitter=0) {
+  const i = Math.max(0, Math.min(FLIGHT_LANES.length - 1, lane));
+  return FLIGHT_LANES[i] + (jitter ? rnd(-jitter, jitter) : 0);
+}
+function nextPatternEvent() {
+  if (!patternQueue.length) {
+    let pick = Math.floor(rnd(0, SPAWN_PATTERNS.length));
+    if (SPAWN_PATTERNS.length > 1 && pick === lastPattern) pick = (pick + 1 + Math.floor(rnd(0, SPAWN_PATTERNS.length - 1))) % SPAWN_PATTERNS.length;
+    lastPattern = pick;
+    patternQueue = SPAWN_PATTERNS[pick].map(e => ({...e}));
+  }
+  return patternQueue.shift();
+}
+function clearSpawnY(x, preferred) {
+  const choices = [preferred, ...FLIGHT_LANES];
+  let bestY = preferred, bestClearance = -Infinity;
+  for (const rawY of choices) {
+    const y = Math.max(130, Math.min(GROUND - 140, rawY));
+    let clearance = 999;
+    for (const o of obstacles) {
+      if (Math.abs(o.x - x) > 260) continue;
+      const pad = o.kind === "cloud" ? o.h * 0.62 : o.h * 0.75;
+      clearance = Math.min(clearance, Math.abs(o.y - y) - pad);
+    }
+    if (clearance > bestClearance) { bestClearance = clearance; bestY = y; }
+  }
+  return bestY;
+}
+
 function reset() {
   plane = { x: 150, y: VH / 2, vy: 0, tilt: 0, w: 74, h: 30 };
   obstacles = []; coins = []; hazards = []; particles = []; popups = [];
@@ -95,6 +146,7 @@ function reset() {
   for (let i = 0; i < 5; i++) clouds.push(makeCloud(rnd(-100, VW)));
   score = 0; coinCount = 0; speed = 150; t = 0; shakeT = 0; coinFlash = 0; crashTimer = 0; crashFreeze = 0; newBest = false;
   spawnTimer = 1.2; coinTimer = 0.8; ringTimer = 0;
+  patternQueue = []; lastPattern = -1; spawnGuideY = VH / 2; lastLevel = 1; levelBannerT = 0;
 }
 
 function makeCloud(x) {
@@ -156,30 +208,34 @@ function start() {
 
 // ---------- Spawning ----------
 function spawnObstacle() {
-  const kind = Math.floor(rnd(0, 3));
-  if (kind === 0) {                        // cloud puff
-    const h = rnd(50, 110);
-    const low = Math.random() < 0.5;
-    obstacles.push({ kind: "cloud", x: VW + 60, y: low ? GROUND - h / 2 : rnd(60, GROUND - 160), w: rnd(80, 130), h: h });
-  } else if (kind === 1) {                 // balloon
-    obstacles.push({ kind: "balloon", x: VW + 40, y: rnd(90, GROUND - 90), w: 34, h: 46, bob: rnd(0, 6.28), str: rnd(20, 54) });
-  } else {                                 // bird
-    const vy0 = rnd(-40, 40);
-    obstacles.push({ kind: "bird", x: VW + 40, y: rnd(100, GROUND - 110), w: 46, h: 26, vy: vy0, flap: 0 });
+  const event = nextPatternEvent();
+  const y = laneY(event.lane, event.kind === "cloud" ? 10 : 14);
+  spawnGuideY = laneY(event.guide, 6);
+  if (event.kind === "cloud") {
+    obstacles.push({ kind: "cloud", x: VW + 60, y, w: rnd(82, 122), h: rnd(56, 100) });
+  } else if (event.kind === "balloon") {
+    obstacles.push({ kind: "balloon", x: VW + 40, y, w: 34, h: 46, bob: rnd(0, 6.28), str: rnd(20, 54) });
+  } else {
+    obstacles.push({ kind: "bird", x: VW + 40, y, w: 46, h: 26, vy: rnd(-40, 40), flap: 0 });
   }
 }
 
 function spawnCoin() {
   const cluster = Math.random() < 0.4 ? 3 : 1;
-  const y = rnd(90, GROUND - 80);
+  // Most coin groups reinforce the readable opening in the current formation,
+  // while a minority remain free-floating so runs still feel varied.
+  const guided = Math.random() < 0.72;
+  const base = guided ? spawnGuideY + rnd(-14, 14) : rnd(90, GROUND - 80);
+  const y = Math.max(90, Math.min(GROUND - 80, base));
   for (let i = 0; i < cluster; i++) {
     coins.push({ x: VW + 40 + i * 44, y: y + (cluster > 1 ? i * 4 : 0), r: 13, spin: rnd(0, 6.28) });
   }
 }
 
-// objective ring: a golden ring the plane must thread through
+// objective ring: still periodic, but biased toward the clearest authored lane
 function spawnRing() {
-  ring = { x: VW + 120, y: rnd(130, GROUND - 140), r: 64, spin: 0 };
+  const preferred = spawnGuideY || rnd(130, GROUND - 140);
+  ring = { x: VW + 120, y: clearSpawnY(VW + 120, preferred), r: 64, spin: 0 };
 }
 
 // wind gust hazard: pushes the plane off course
@@ -231,6 +287,7 @@ function update(dt) {
 
   shakeT = Math.max(0, shakeT - dt * (state === "crash" ? 4.5 : 3));
   coinFlash = Math.max(0, coinFlash - dt * 4);
+  levelBannerT = Math.max(0, levelBannerT - dt);
 
   if (state === "crash") {
     crashTimer -= dt;
@@ -239,10 +296,17 @@ function update(dt) {
   }
   if (state !== "play") return;
 
-  // level from score; speed ramps with level
+  // level from score; speed ramps with level exactly as before
   const lv = levelForScore(score);
   speed = speedForLevel(lv);
   score += speed * dt * 0.05;
+  const currentLevel = levelForScore(score);
+  if (currentLevel !== lastLevel) {
+    lastLevel = currentLevel;
+    levelBannerT = 2.15;
+    beep(660 + currentLevel * 38, 0.11, "square", 0.045);
+    beep(880 + currentLevel * 42, 0.16, "triangle", 0.04);
+  }
 
   // Flight polish: input still means only UP / DOWN, but the plane now eases into
   // its target vertical speed instead of teleporting directly at KEY_SPEED.

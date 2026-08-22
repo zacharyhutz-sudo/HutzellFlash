@@ -127,44 +127,114 @@ function pixelDisc(cx,cy,r,color){
   }
 }
 function displayLevel(){ return state === "title" ? 1 : levelForScore(score); }
+function mixColor(a,b,tv){
+  const h=v=>parseInt(v,16);
+  const ar=h(a.slice(1,3)), ag=h(a.slice(3,5)), ab=h(a.slice(5,7));
+  const br=h(b.slice(1,3)), bg=h(b.slice(3,5)), bb=h(b.slice(5,7));
+  const q=(x,y)=>Math.round(x+(y-x)*tv).toString(16).padStart(2,"0");
+  return "#"+q(ar,br)+q(ag,bg)+q(ab,bb);
+}
+function journeyStage(){
+  if(state==="title") return 0;
+  const lv=levelForScore(score);
+  if(lv>=LEVEL_THRESHOLDS.length) return LEVEL_THRESHOLDS.length-1;
+  const cur=LEVEL_THRESHOLDS[lv-1], next=LEVEL_THRESHOLDS[lv];
+  const f=clamp((score-cur)/(next-cur),0,1);
+  return (lv-1)+f;
+}
+const SKY_KEYS = [
+  ["#4d93d4","#69afe8","#8bc8ed","#b9e1f3"], // 1 bright morning
+  ["#4f96d2","#70b2e5","#93c9e8","#c3e3ef"], // 2 open sky
+  ["#568bb8","#6da0c6","#8ab8d2","#b3d4df"], // 3 weather building
+  ["#405d75","#54718a","#718aa0","#9fb1bf"], // 4 storm front
+  ["#334b61","#476177","#637b8e","#8fa1ad"], // 5 hurricane bay
+  ["#557895","#7895ac","#9db1bd","#c9c7b6"], // 6 clearing / late day
+  ["#6b75b8","#9a7dc2","#d9939e","#f1bd86"], // 7 sunset
+  ["#3f4a76","#66557d","#95667d","#c78673"], // 8 dusk
+  ["#172a47","#254163","#365b78","#52748b"], // 9 storm night
+  ["#101a2d","#182b43","#263e56","#3b5567"]  // 10 crosswinds
+];
 function skyPalette(){
-  const lv=displayLevel();
-  if(lv>=9) return [P.night1,P.night2,P.night3,P.night4];
-  if(lv>=7) return [P.sunset1,P.sunset2,P.sunset3,P.sunset4];
-  if(lv>=4) return [P.storm1,P.storm2,P.storm3,P.storm4];
-  return [P.sky1,P.sky2,P.sky3,P.sky4];
+  const st=journeyStage(), a=Math.floor(st), b=Math.min(SKY_KEYS.length-1,a+1), f=st-a;
+  return SKY_KEYS[a].map((c,i)=>mixColor(c,SKY_KEYS[b][i],f));
 }
 
 function drawSky(){
-  const pal=skyPalette();
+  const pal=skyPalette(), st=journeyStage();
   const band=Math.ceil(ART_H/4);
   for(let i=0;i<4;i++){ ctx.fillStyle=pal[i]; ctx.fillRect(0,i*band,ART_W,band+1); }
-  const lv=displayLevel();
-  // sparse pixel texture / stars at the latest stages
-  if(lv>=9){
+
+  // The run now reads as one continuous trip: bright fields -> incoming weather ->
+  // clearing light -> sunset -> dusk -> a stormy night. Everything is generated
+  // from tiny shapes / existing atlas sprites, so this costs essentially no asset weight.
+  const starAlpha=clamp((st-6.8)/1.6,0,1);
+  if(starAlpha>0){
+    ctx.globalAlpha=starAlpha;
     ctx.fillStyle="#d7ecff";
-    const stars=[[18,18],[41,31],[69,12],[103,25],[139,18],[171,37],[211,14],[247,27],[279,10],[301,39],[87,47],[226,49]];
-    for(const s of stars) ctx.fillRect(s[0],s[1],1,1);
+    const stars=[[18,18],[41,31],[69,12],[103,25],[139,18],[171,37],[211,14],[247,27],[279,10],[301,39],[87,47],[226,49],[13,51],[153,8],[314,22]];
+    for(const q of stars) ctx.fillRect(q[0],q[1],1,1);
+    ctx.globalAlpha=1;
+  }
+
+  if(st<7.75){
+    const sunY=Math.round(28+Math.max(0,st-5.2)*13);
+    const warm=clamp((st-5.5)/2.2,0,1);
+    pixelDisc(280,sunY,10,mixColor("#fff0a7","#ffb76b",warm));
+    ctx.fillStyle="rgba(255,229,153,.18)"; ctx.fillRect(268,sunY-1,24,2); ctx.fillRect(279,sunY-12,2,24);
+  } else {
+    const moonA=clamp((st-7.75)/.9,0,1);
+    ctx.globalAlpha=moonA;
     pixelDisc(280,28,9,"#e7e6c7");
     ctx.fillStyle=pal[0]; ctx.fillRect(276,20,7,12);
-  } else {
-    pixelDisc(280,29,10,lv>=7?"#ffd88c":"#fff0a7");
-    ctx.fillStyle=lv>=7?"rgba(255,216,140,.25)":"rgba(255,240,167,.25)";
-    ctx.fillRect(268,28,24,2); ctx.fillRect(279,17,2,24);
+    ctx.globalAlpha=1;
   }
-  // very distant mountain chain, slow parallax
+
+  // very distant mountain chain, increasingly prominent as the route leaves farmland
   const farOff=Math.floor((t*(state==="title"?45:speed)*0.018)%48);
-  for(let x=-farOff-48;x<ART_W+48;x+=48) sprite("mountain",x,137,{alpha:.55});
-  // field banding, gives the bottom of the world a tiled/pixel-art landscape
-  ctx.fillStyle="rgba(46,94,67,.34)"; ctx.fillRect(0,151,ART_W,10);
-  ctx.fillStyle="rgba(115,158,91,.24)";
+  const mountainAlpha=.38+clamp(st/5,0,.5);
+  for(let x=-farOff-48;x<ART_W+48;x+=48) sprite("mountain",x,137,{alpha:mountainAlpha});
+
+  // field banding fades back as the trip climbs into the later stages
+  const fieldAlpha=.34*(1-clamp((st-5.5)/3.5,0,.7));
+  ctx.fillStyle=`rgba(46,94,67,${fieldAlpha.toFixed(3)})`; ctx.fillRect(0,151,ART_W,10);
+  ctx.fillStyle=`rgba(115,158,91,${(fieldAlpha*.7).toFixed(3)})`;
   const fieldOff=Math.floor((t*(state==="title"?35:speed)*0.03)%28);
   for(let x=-fieldOff;x<ART_W;x+=28) ctx.fillRect(x,154,15,2);
-  // distant farm / tree silhouettes on a separate parallax layer
+
+  // early-run farms gradually give way to denser trees and silhouettes
   const midOff=Math.floor((t*(state==="title"?40:speed)*0.06)%96);
+  const farmAlpha=.74*(1-clamp((st-3.5)/3.5,0,.8));
+  const treeAlpha=.58+clamp(st/8,0,.28);
   for(let x=-midOff-96,i=0;x<ART_W+96;x+=96,i++){
-    if(i%2===0) sprite("farmhouse",x+25,141,{alpha:.74});
-    sprite("tree",x+68,136,{alpha:.72,w:12,h:19});
+    if(i%2===0 && farmAlpha>.12) sprite("farmhouse",x+25,141,{alpha:farmAlpha});
+    sprite("tree",x+68,136,{alpha:treeAlpha,w:12,h:19});
+  }
+
+  // Distant town lights quietly appear at dusk/night.
+  const lightAlpha=clamp((st-7.1)/1.2,0,1);
+  if(lightAlpha>0){
+    ctx.globalAlpha=lightAlpha; ctx.fillStyle="#ffd883";
+    const lights=[[8,148],[24,146],[57,150],[82,147],[117,149],[141,145],[168,150],[201,147],[225,149],[252,145],[287,148],[309,146]];
+    for(const q of lights) ctx.fillRect(q[0],q[1],1,1);
+    ctx.globalAlpha=1;
+  }
+
+  // Late-run rain and rare lightning are visual atmosphere only; hazards are unchanged.
+  const rainAlpha=clamp((st-8.0)/1.0,0,1)*.38;
+  if(rainAlpha>0){
+    ctx.globalAlpha=rainAlpha; ctx.fillStyle="#b9d8ed";
+    const drift=Math.floor(t*28)%23, drop=Math.floor(t*17)%19;
+    for(let i=0;i<18;i++){
+      const x=(i*23+drift)%ART_W, y=(i*17+drop)%126;
+      ctx.fillRect(x,y,1,3);
+    }
+    ctx.globalAlpha=1;
+  }
+  const flash=st>8.45 && ((t%7.2)<.055 || ((t+2.4)%11.3)<.045);
+  if(flash){
+    ctx.fillStyle="rgba(220,239,255,.18)"; ctx.fillRect(0,0,ART_W,130);
+    ctx.fillStyle="#d9efff";
+    const bx=236; ctx.fillRect(bx,18,2,11); ctx.fillRect(bx-2,28,3,8); ctx.fillRect(bx-5,35,4,8); ctx.fillRect(bx-7,42,3,7);
   }
 }
 
@@ -266,10 +336,21 @@ function drawHUD(){
     const cur=LEVEL_THRESHOLDS[lv-1]; const frac=clamp((score-cur)/(next-cur),0,1);
     ctx.fillStyle=P.blue; ctx.fillRect(5,14,Math.floor(310*frac),1);
   } else { ctx.fillStyle=P.blue; ctx.fillRect(5,14,310,1); }
-  if(ring){
+  if(ring && levelBannerT<=0.15){
     panel(75,20,170,13);
     pixelText("FLY THROUGH THE RING +150",160,23,1,P.gold,"center",false);
   }
+}
+
+function drawLevelBanner(){
+  if(levelBannerT<=0 || state!=="play") return;
+  const lv=lastLevel, age=2.15-levelBannerT;
+  const alpha=clamp(Math.min(age/.18,levelBannerT/.35),0,1);
+  ctx.globalAlpha=alpha;
+  panel(87,25,146,30);
+  pixelText("LEVEL "+lv,160,30,2,P.gold,"center",true);
+  pixelText(LEVEL_NAMES[lv-1],160,47,1,P.white,"center",false);
+  ctx.globalAlpha=1;
 }
 
 function titleCard(){
@@ -322,7 +403,7 @@ function draw(){
     ctx.fillStyle="rgba(255,244,218,.20)";
     ctx.fillRect(0,0,ART_W,ART_H);
   }
-  if(state==="play") drawHUD();
+  if(state==="play") { drawHUD(); drawLevelBanner(); }
   if(state==="title") titleCard();
   if(state==="over") overCard();
   ctx.restore();
