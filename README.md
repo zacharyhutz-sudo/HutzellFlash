@@ -2,28 +2,32 @@
 
 A tiny 2D arcade game: fly a little airplane, dodge the weather, grab the coins.
 
-Single file, zero dependencies, no build step. Pure HTML5 canvas with hand-drawn vector graphics and Web Audio beeps.
+This version keeps the original gameplay intact and replaces the old vector-style drawing system with a true chunky pixel-art renderer.
 
 ## Play
 
-Open `index.html` in any modern browser (desktop or phone).
+Open `index.html` in any modern browser, or publish the folder directly with GitHub Pages.
 
 - **Steer:** hold mouse/touch to set target altitude, or `W`/`S` / arrow keys
 - **Start / retry:** `Space` or tap
 - Dodge **grumpy storm clouds**, **red balloons**, and **flying birds**
-- Collect **coins** (+25 points each) — some spawn in clusters
+- Collect **coins** (+25 points each)
+- Fly through **golden rings** (+150)
+- From level 4 onward, avoid or compensate for **wind gusts**
 
-## Progression
+## Pixel graphics system
 
-- **Levels:** your score drives a 10-level rank — *Sky Trainee* up to *Crosswinds*. Each level is faster and a touch tougher, with a live level name in the HUD and a progress bar toward the next one.
-- **Golden rings:** a ring periodically appears; thread through it for a **+150** bonus. It gives you clear, visible goals beyond the score.
-- **Wind gusts:** from level 4, gusts sweep in and shove the plane off course. A chevron shows which way it blows, and the push grows stronger as you level up — a new mechanic that matters more the deeper you go.
-- **Game-over summary:** when you crash you see your score, coins, level reached, and peak speed, plus a "NEW BEST RUN!" badge when you beat your record.
-
-Speed ramps up the longer you survive. Your best score is saved locally (survives a refresh), and restarting resets the run without erasing it.
+- Gameplay coordinates remain **960×540** so the original movement, timing, spawning, collisions, score system, and progression are unchanged.
+- Rendering happens on a true **320×180** art grid and is enlarged with nearest-neighbor scaling.
+- All gameplay objects are hand-built pixel sprites with hard edges and limited palettes.
+- The HUD and menus use a built-in **5×7 bitmap alphabet**, so there is no font download.
+- Terrain uses lightweight parallax layers assembled from tiny pixel sprites.
+- The sprite atlas is only a few KB and there are no frameworks or external dependencies.
 
 ## Structure
 
-- `index.html` — the entire game (rendering, physics, audio, input, progression)
+- `index.html` — gameplay, input, audio, progression, and main loop
+- `graphics.js` — the complete pixel renderer, bitmap text system, parallax scene, HUD, and sprite animation logic
+- `assets/hutzellflash-atlas.png` — all pixel artwork in one tiny sprite sheet
 
-No assets, no frameworks, no network requests.
+No build step and no network dependency.

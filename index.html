@@ -38,7 +38,7 @@
   #rotatePrompt .phone {
     width: 52px; height: 92px;
     border: 4px solid #9fd6ff;
-    border-radius: 12px;
+    border-radius: 0;
     margin-bottom: 28px;
     animation: turnPhone 1.8s ease-in-out infinite;
   }
@@ -52,7 +52,7 @@
 <div id="wrap"><canvas id="game"></canvas></div>
 <div id="rotatePrompt">
   <div class="phone"></div>
-  <div style="font-size:22px; font-weight:bold; letter-spacing:2px;">ROTATE YOUR DEVICE</div>
+  <div style="font-size:20px; font-weight:bold; letter-spacing:2px; text-transform:uppercase;">ROTATE YOUR DEVICE</div>
   <div style="font-size:14px; color:#9fd6ff; margin-top:10px;">HutzellFlash flies best in landscape</div>
 </div>
 <script>
@@ -61,7 +61,7 @@
 // ---------- Canvas ----------
 const canvas = document.getElementById("game");
 const VW = 960, VH = 540;                 // internal resolution
-const PIXEL = 2;                          // pixel-art scale: scene renders at VW/PIXEL, upscaled nearest-neighbor
+const PIXEL = 3;                          // 320x180 true-pixel art grid, upscaled nearest-neighbor
 canvas.width = VW; canvas.height = VH;
 const main = canvas.getContext("2d");
 main.imageSmoothingEnabled = false;
@@ -330,329 +330,12 @@ function gameOver(hit) {
   if (total > best) { best = total; localStorage.setItem("hutzellflash_best", String(best)); }
 }
 
-// ---------- Drawing ----------
-function drawSky() {
-  // banded sky: stepped color bands read as pixel-art sky layers
-  const bands = ["#5f9fe8", "#6fb9ff", "#84c5ff", "#a8d8ff", "#c2e6ff", "#d9f2ff", "#e8f6ff"];
-  const bh = Math.ceil(VH / bands.length);
-  for (let i = 0; i < bands.length; i++) {
-    ctx.fillStyle = bands[i];
-    ctx.fillRect(0, i * bh, VW, bh + 1);
-  }
-
-  // sun
-  ctx.fillStyle = "rgba(255, 236, 150, 0.9)";
-  ctx.beginPath(); ctx.arc(VW - 120, 90, 44, 0, 7); ctx.fill();
-  ctx.fillStyle = "rgba(255, 236, 150, 0.35)";
-  ctx.beginPath(); ctx.arc(VW - 120, 90, 62 + Math.sin(t * 2) * 4, 0, 7); ctx.fill();
-
-  // far hills
-  ctx.fillStyle = "rgba(122, 178, 122, 0.55)";
-  ctx.beginPath();
-  ctx.moveTo(0, GROUND);
-  for (let x = 0; x <= VW; x += 48) ctx.lineTo(x, GROUND - 40 - 34 * Math.abs(Math.sin(x * 0.008 + 2)));
-  ctx.lineTo(VW, GROUND); ctx.fill();
-}
-
-function drawCloud(x, y, s) {
-  ctx.fillStyle = "rgba(255,255,255,0.85)";
-  ctx.beginPath();
-  ctx.arc(x, y, 22 * s, 0, 7);
-  ctx.arc(x + 24 * s, y - 8 * s, 18 * s, 0, 7);
-  ctx.arc(x + 48 * s, y, 20 * s, 0, 7);
-  ctx.arc(x + 24 * s, y + 8 * s, 16 * s, 0, 7);
-  ctx.fill();
-}
-
-function drawHazard(h) {
-  ctx.save();
-  ctx.globalAlpha = 0.75;
-  ctx.fillStyle = "#9fd6ff";
-  for (let i = 0; i < 3; i++) {
-    const yy = h.y + (i - 1) * 18;
-    const dir = h.dir > 0 ? 1 : -1;
-    ctx.beginPath();
-    ctx.moveTo(h.x - dir * 40, yy);
-    ctx.lineTo(h.x + dir * (20 + i * 6), yy);
-    ctx.lineTo(h.x + dir * (20 + i * 6 + 14), yy - 4);
-    ctx.lineTo(h.x + dir * (20 + i * 6 + 14), yy + 4);
-    ctx.closePath();
-    ctx.fill();
-  }
-  // chevron showing which way the gust blows
-  ctx.globalAlpha = 0.9;
-  ctx.fillStyle = "#ffffff";
-  const s = h.push > 0 ? 1 : -1;   // +1 blows down, -1 blows up
-  ctx.beginPath();
-  ctx.moveTo(h.x - 14, h.y - 30 * s);
-  ctx.lineTo(h.x + 14, h.y - 30 * s);
-  ctx.lineTo(h.x, h.y - 30 * s - 12 * s);
-  ctx.closePath();
-  ctx.fill();
-  ctx.restore();
-}
-
-function drawRing(r) {
-  ctx.save();
-  ctx.translate(r.x, r.y);
-  ctx.rotate(Math.sin(r.spin) * 0.4);
-  ctx.globalAlpha = 0.9;
-  ctx.strokeStyle = "#ffd94d";
-  ctx.lineWidth = 10;
-  ctx.beginPath(); ctx.arc(0, 0, r.r, 0, 7); ctx.stroke();
-  ctx.strokeStyle = "rgba(255, 217, 77, 0.4)";
-  ctx.lineWidth = 3;
-  ctx.beginPath(); ctx.arc(0, 0, r.r + 12, 0, 7); ctx.stroke();
-  ctx.fillStyle = "#fff3b0";
-  ctx.font = "bold 16px monospace";
-  ctx.textAlign = "center"; ctx.textBaseline = "middle";
-  ctx.fillText("+150", 0, 0);
-  ctx.restore();
-}
-
-function drawObstacle(o) {
-  if (o.kind === "cloud") {
-    ctx.fillStyle = "#5a6b7d";
-    ctx.strokeStyle = "#42525f"; ctx.lineWidth = 3;
-    ctx.beginPath();
-    const r = o.h / 2;
-    ctx.arc(o.x - o.w * 0.28, o.y, r * 0.8, 0, 7);
-    ctx.arc(o.x, o.y - r * 0.4, r, 0, 7);
-    ctx.arc(o.x + o.w * 0.28, o.y, r * 0.8, 0, 7);
-    ctx.fill(); ctx.stroke();
-    // little grumpy face
-    ctx.fillStyle = "#fff";
-    ctx.beginPath(); ctx.arc(o.x - 12, o.y - 4, 4, 0, 7); ctx.arc(o.x + 12, o.y - 4, 4, 0, 7); ctx.fill();
-    ctx.strokeStyle = "#42525f"; ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(o.x - 17, o.y - 12); ctx.lineTo(o.x - 7, o.y - 9);
-    ctx.moveTo(o.x + 17, o.y - 12); ctx.lineTo(o.x + 7, o.y - 9);
-    ctx.stroke();
-  } else if (o.kind === "balloon") {
-    ctx.strokeStyle = "#5a4632"; ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(o.x, o.y + o.h / 2);
-    ctx.quadraticCurveTo(o.x + 8, o.y + o.h / 2 + o.str * 0.5, o.x - 4, o.y + o.h / 2 + o.str);
-    ctx.stroke();
-    const g = ctx.createLinearGradient(o.x - 17, 0, o.x + 17, 0);
-    g.addColorStop(0, "#d94f4f"); g.addColorStop(0.5, "#ff7b7b"); g.addColorStop(1, "#d94f4f");
-    ctx.fillStyle = g;
-    ctx.beginPath(); ctx.ellipse(o.x, o.y, 17, 22, 0, 0, 7); ctx.fill();
-    ctx.fillStyle = "#a83232";
-    ctx.beginPath(); ctx.arc(o.x, o.y + 22, 4, 0, 7); ctx.fill();
-  } else { // bird
-    const w = Math.sin(o.flap) * 12;
-    ctx.fillStyle = "#3c4a5a";
-    ctx.beginPath(); ctx.ellipse(o.x, o.y, 16, 9, 0, 0, 7); ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(o.x + 12, o.y - 2); ctx.lineTo(o.x + 24, o.y - 4); ctx.lineTo(o.x + 12, o.y + 3);
-    ctx.fill();
-    ctx.strokeStyle = "#2c3644"; ctx.lineWidth = 5; ctx.lineCap = "round";
-    ctx.beginPath();
-    ctx.moveTo(o.x - 4, o.y);
-    ctx.lineTo(o.x - 22, o.y - 10 - w);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(o.x + 4, o.y);
-    ctx.lineTo(o.x + 14, o.y - 8 - w);
-    ctx.stroke();
-    ctx.fillStyle = "#ffb04d";
-    ctx.beginPath(); ctx.arc(o.x + 13, o.y - 2, 2.5, 0, 7); ctx.fill();
-  }
-}
-
-function drawCoin(c) {
-  const sx = Math.abs(Math.cos(c.spin));
-  ctx.save();
-  ctx.translate(c.x, c.y);
-  ctx.scale(Math.max(0.18, sx), 1);
-  ctx.fillStyle = "#e8a820";
-  ctx.beginPath(); ctx.arc(0, 0, c.r, 0, 7); ctx.fill();
-  ctx.fillStyle = "#ffd94d";
-  ctx.beginPath(); ctx.arc(0, 0, c.r - 4, 0, 7); ctx.fill();
-  ctx.fillStyle = "#e8a820";
-  ctx.font = "bold 13px monospace";
-  ctx.textAlign = "center"; ctx.textBaseline = "middle";
-  ctx.fillText("$", 0, 1);
-  ctx.restore();
-}
-
-function drawPlane() {
-  ctx.save();
-  ctx.translate(plane.x, plane.y);
-  ctx.rotate(plane.tilt * 0.5);
-
-  // contrail
-  ctx.fillStyle = "rgba(255,255,255,0.35)";
-  ctx.beginPath();
-  ctx.moveTo(-30, -2);
-  ctx.lineTo(-30 - rnd(30, 60), -8 - rnd(0, 8));
-  ctx.lineTo(-30 - rnd(30, 60), 6 + rnd(0, 8));
-  ctx.fill();
-
-  // fuselage
-  ctx.fillStyle = "#e8edf4";
-  ctx.strokeStyle = "#42525f"; ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.moveTo(38, 0);
-  ctx.quadraticCurveTo(30, -11, 8, -11);
-  ctx.lineTo(-26, -8);
-  ctx.quadraticCurveTo(-34, 0, -26, 8);
-  ctx.lineTo(8, 11);
-  ctx.quadraticCurveTo(30, 11, 38, 0);
-  ctx.closePath();
-  ctx.fill(); ctx.stroke();
-
-  // tail
-  ctx.fillStyle = "#ff7b4d";
-  ctx.beginPath();
-  ctx.moveTo(-24, -6);
-  ctx.lineTo(-34, -22);
-  ctx.lineTo(-18, -8);
-  ctx.closePath();
-  ctx.fill();
-
-  // wing
-  ctx.fillStyle = "#d94f4f";
-  ctx.beginPath();
-  ctx.moveTo(10, -4);
-  ctx.lineTo(-14, -20);
-  ctx.lineTo(-22, -20);
-  ctx.lineTo(-8, -4);
-  ctx.closePath();
-  ctx.fill();
-  ctx.strokeStyle = "#42525f"; ctx.lineWidth = 2; ctx.stroke();
-
-  // window
-  ctx.fillStyle = "#7fd4ff";
-  ctx.strokeStyle = "#42525f"; ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.ellipse(18, -3, 7, 5, 0, 0, 7); ctx.fill(); ctx.stroke();
-
-  // spinner
-  ctx.fillStyle = "#42525f";
-  ctx.beginPath(); ctx.arc(40, 0, 4, 0, 7); ctx.fill();
-
-  ctx.restore();
-}
-
-function drawGround() {
-  ctx.fillStyle = "#7cb47c";
-  ctx.fillRect(0, GROUND, VW, VH - GROUND);
-  ctx.fillStyle = "#5f9660";
-  ctx.fillRect(0, GROUND, VW, 8);
-  // runway stripes scrolling
-  const off = (t * speed * 0.8) % 80;
-  ctx.fillStyle = "rgba(255,255,255,0.35)";
-  for (let x = -off; x < VW; x += 80) {
-    ctx.fillRect(x, GROUND + 34, 44, 5);
-  }
-  // bushes
-  ctx.fillStyle = "#4d8a52";
-  const off2 = (t * speed * 0.5) % 160;
-  for (let x = -off2; x < VW + 60; x += 160) {
-    ctx.beginPath();
-    ctx.arc(x, GROUND, 14, Math.PI, 0);
-    ctx.arc(x + 18, GROUND, 10, Math.PI, 0);
-    ctx.fill();
-  }
-}
-
-function drawHUD() {
-  ctx.textBaseline = "top";
-  ctx.fillStyle = "rgba(16, 28, 44, 0.55)";
-  ctx.fillRect(0, 0, VW, 46);
-  ctx.fillStyle = "#fff";
-  ctx.font = "bold 20px monospace";
-  ctx.textAlign = "left";
-  ctx.fillText("SCORE " + String(Math.floor(score)).padStart(5, "0"), 16, 12);
-
-  // level badge (center) + coins
-  const lv = levelForScore(score);
-  const name = LEVEL_NAMES[lv - 1];
-  ctx.textAlign = "center";
-  ctx.fillStyle = coinFlash > 0.4 ? "#fff3b0" : "#ffd94d";
-  ctx.fillText("LV " + lv + "  " + name, VW / 2 - 110, 12);
-  ctx.fillStyle = "#9fd6ff";
-  ctx.fillText("COINS " + coinCount, VW / 2 + 120, 12);
-  ctx.textAlign = "right";
-  ctx.fillStyle = "#9fd6ff";
-  ctx.fillText("BEST " + String(best).padStart(5, "0"), VW - 16, 12);
-
-  // progress bar toward next level
-  const next = LEVEL_THRESHOLDS[lv]; // undefined at max level
-  if (next !== undefined) {
-    const cur = LEVEL_THRESHOLDS[lv - 1];
-    const frac = Math.max(0, Math.min(1, (score - cur) / (next - cur)));
-    ctx.fillStyle = "rgba(255,255,255,0.25)";
-    ctx.fillRect(16, 42, VW - 32, 3);
-    ctx.fillStyle = "#9fd6ff";
-    ctx.fillRect(16, 42, (VW - 32) * frac, 3);
-  } else {
-    ctx.fillStyle = "#9fd6ff";
-    ctx.fillRect(16, 42, VW - 32, 3);
-    ctx.font = "bold 11px monospace";
-    ctx.textAlign = "left";
-    ctx.fillText("MAX LEVEL", 16, 30);
-  }
-
-  // objective banner
-  if (ring) centerText("FLY THROUGH THE RING  +150", 64, 16, "#ffd94d");
-}
-
-function centerText(txt, y, size, color) {
-  ctx.font = "bold " + size + "px monospace";
-  ctx.textAlign = "center"; ctx.textBaseline = "middle";
-  ctx.fillStyle = "rgba(10, 20, 34, 0.55)";
-  const w = ctx.measureText(txt).width + 60;
-  ctx.fillRect(VW / 2 - w / 2, y - size * 0.8, w, size * 1.6);
-  ctx.fillStyle = color;
-  ctx.fillText(txt, VW / 2, y);
-}
-
-function draw() {
-  ctx.setTransform(1 / PIXEL, 0, 0, 1 / PIXEL, 0, 0);   // draw in full-res game coords onto the low-res buffer
-  ctx.save();
-  if (shakeT > 0) ctx.translate(rnd(-8, 8) * shakeT, rnd(-8, 8) * shakeT);
-
-  drawSky();
-  for (const c of clouds) drawCloud(c.x, c.y, c.s);
-  for (const h of hazards) drawHazard(h);
-  drawGround();
-  for (const o of obstacles) drawObstacle(o);
-  for (const c of coins) drawCoin(c);
-  if (ring) drawRing(ring);
-  if (state !== "over") drawPlane();
-  for (const p of particles) {
-    ctx.globalAlpha = 1 - p.t / p.life;
-    ctx.fillStyle = p.color;
-    ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, 7); ctx.fill();
-  }
-  ctx.globalAlpha = 1;
-
-  if (state === "play") drawHUD();
-  if (state === "title") {
-    centerText("HUTZELLFLASH", 170, 52, "#fff");
-    centerText("fly the plane - dodge the weather", 240, 20, "#dcecff");
-    centerText("up/down or hold to steer - grab the coins", 274, 18, "#ffd94d");
-    centerText("climb through levels - clear the golden rings", 308, 16, "#9fd6ff");
-    if (Math.sin(t * 4) > -0.3) centerText("PRESS SPACE / TAP TO FLY", 380, 22, "#9fd6ff");
-  }
-  if (state === "over") {
-    const total = Math.floor(score);
-    const lv = levelForScore(total);
-    const name = LEVEL_NAMES[lv - 1];
-    const speedPct = Math.round((Math.min(speed, 600) / 600) * 100);
-    centerText("CRASHED!", 170, 52, "#ff8b6b");
-    centerText("SCORE " + total + "     COINS " + coinCount, 232, 24, "#fff");
-    centerText("REACHED LEVEL " + lv + "  -  " + name, 268, 18, "#9fd6ff");
-    centerText("PEAK SPEED " + speedPct + "%   BEST " + best, 300, 18, "#ffd94d");
-    if (total >= best && total > 0) centerText("NEW BEST RUN!", 330, 16, "#7dff9f");
-    if (Math.sin(t * 4) > -0.3) centerText("PRESS SPACE / TAP TO RETRY", 372, 20, "#9fd6ff");
-  }
-  ctx.restore();
-  // blit the low-res buffer up to the visible canvas, nearest-neighbor for the pixel look
-  main.drawImage(pcan, 0, 0, VW, VH);
-}
+// ---------- Rendering ----------
+// All drawing is handled by graphics.js. Gameplay above remains unchanged.
+</script>
+<script src="graphics.js"></script>
+<script>
+"use strict";
 
 // ---------- Mobile orientation prompt ----------
 const rotatePrompt = document.getElementById("rotatePrompt");
